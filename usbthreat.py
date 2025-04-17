@@ -13,23 +13,18 @@ import subprocess
 import hashlib
 import re
 import magic  # pip install python-magic-bin for Windows
-import win32service
-import win32serviceutil
-import win32event
-import servicemanager
-import ctypes
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 from collections import defaultdict
 
-# Configure logging - changed to file only since we're running in background
-log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "usb_monitor.log")
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(log_file),
+        logging.FileHandler("usb_monitor.log"),
+        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
@@ -237,6 +232,12 @@ class DeviceMonitor:
         email_thread.daemon = True
         email_thread.start()
         
+        # Display a critical message before shutdown
+        print(f"\n\n!!! CRITICAL SECURITY THREAT DETECTED !!!")
+        print(f"Threats found on USB drive {drive_letter}")
+        print(f"System will shut down in {SHUTDOWN_DELAY} seconds to prevent data compromise.")
+        print("THIS ACTION CANNOT BE CANCELLED.")
+        
         # Sleep for the shutdown delay before executing the actual shutdown
         time.sleep(SHUTDOWN_DELAY)
         
@@ -391,6 +392,7 @@ class DeviceMonitor:
         self.monitor_thread.start()
         
         logger.info("USB threat monitoring started")
+        print("USB threat monitoring started. Waiting for USB devices...")
         
     def stop_monitoring(self):
         self.running = False
@@ -401,6 +403,7 @@ class DeviceMonitor:
                 pass
                 
         logger.info("USB monitoring stopped")
+        print("USB monitoring stopped")
     
     def monitor(self):
         try:
@@ -436,16 +439,19 @@ class DeviceMonitor:
             
         try:
             logger.info(f"Scanning {drive_letter} for threats...")
+            print(f"Scanning USB drive {drive_letter} for threats...")
                 
             # Scan the drive
             threats = self.threat_scanner.scan_usb_drive(drive_letter)
             
             if threats:
                 logger.warning(f"Found {len(threats)} threats on {drive_letter}")
+                print(f"ALERT: Found {len(threats)} potential threats on {drive_letter}")
                 
                 # Format threat details for logging
                 threat_details = "\n".join([f"- {t['threat_info']} ({t['file_path']})" for t in threats])
                 logger.warning(f"Threat details:\n{threat_details}")
+                print(f"Threat details:\n{threat_details}")
                 
                 # Send email notification about threats
                 subject = f"CRITICAL: USB Threats Detected on {self.hostname}"
@@ -463,6 +469,7 @@ class DeviceMonitor:
                 self.execute_shutdown(device_id, drive_letter)
             else:
                 logger.info(f"No threats found on {drive_letter}")
+                print(f"No threats found on {drive_letter}")
                     
         except Exception as e:
             logger.error(f"Error scanning device {device_id}: {str(e)}")
@@ -481,6 +488,8 @@ class DeviceMonitor:
                     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     subject = f"USB Device Connected: {device_info.get('manufacturer', 'Unknown')} {device_info.get('product', 'Unknown')}"
                     message = self.format_device_message(device_info, "Connected", timestamp)
+                    
+                    print(f"USB device connected: {device_info.get('manufacturer', 'Unknown')} {device_info.get('product', 'Unknown')} - {device_info.get('drive_letter', '')}")
                     
                     # Use threading for email sending to prevent freezing
                     email_thread = threading.Thread(target=self.email_sender.send, args=(subject, message))
@@ -502,6 +511,8 @@ class DeviceMonitor:
                     subject = f"USB Device Disconnected: {device_info.get('manufacturer', 'Unknown')} {device_info.get('product', 'Unknown')}"
                     message = self.format_device_message(device_info, "Disconnected", timestamp)
                     
+                    print(f"USB device disconnected: {device_info.get('manufacturer', 'Unknown')} {device_info.get('product', 'Unknown')} - {device_info.get('drive_letter', '')}")
+                    
                     # Use threading for email sending to prevent freezing
                     email_thread = threading.Thread(target=self.email_sender.send, args=(subject, message))
                     email_thread.daemon = True
@@ -511,178 +522,44 @@ class DeviceMonitor:
             for device_id in device_ids_to_remove:
                 del connected_devices[device_id]
 
-# Windows Service class
-class USBMonitorService(win32serviceutil.ServiceFramework):
-    _svc_name_ = "USBMonitorService"
-    _svc_display_name_ = "USB Device Monitor Service"
-    _svc_description_ = "Monitors USB devices for security threats and sends notifications"
+def main():
+    # Set up email settings
+    email_config = {
+        'from_email': 'dheerajsarswat14@gmail.com',
+        'to_email': 'dheeraj.23bcy10146@vitbhopal.ac.in',
+        'smtp_server': 'smtp.gmail.com',
+        'smtp_port': 587,
+        'username': 'dheerajsarswat14@gmail.com',
+        'password': 'ktvphausyyxgpqec'
+    }
     
-    def __init__(self, args):
-        win32serviceutil.ServiceFramework.__init__(self, args)
-        self.hWaitStop = win32event.CreateEvent(None, 0, 0, None)
-        self.is_alive = True
-        self.monitor = None
+    # Save email config
+    try:
+        with open("email_config.json", "w") as f:
+            json.dump(email_config, f)
+    except Exception as e:
+        logger.error(f"Error saving email config: {str(e)}")
     
-    def SvcStop(self):
-        self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
-        win32event.SetEvent(self.hWaitStop)
-        self.is_alive = False
-        if self.monitor:
-            self.monitor.stop_monitoring()
-    
-    def SvcDoRun(self):
-        servicemanager.LogMsg(
-            servicemanager.EVENTLOG_INFORMATION_TYPE,
-            servicemanager.PYS_SERVICE_STARTED,
-            (self._svc_name_, '')
-        )
-        
-        # Load email configuration
-        email_config = self.load_email_config()
-        
-        # Start monitoring
-        self.monitor = DeviceMonitor(email_config)
-        self.monitor.start_monitoring()
-        
-        # Main service loop
-        while self.is_alive:
-            # Check if service stop is requested
-            if win32event.WaitForSingleObject(self.hWaitStop, 1000) == win32event.WAIT_OBJECT_0:
-                break
-    
-    def load_email_config(self):
-        # Default configuration
-        email_config = {
- 'from_email': 'your-email@example.com',
-    'to_email': 'alerts-email@example.com',
-    'smtp_server': 'smtp.example.com',
-    'smtp_port': 587,
-    'username': 'your-username',
-    'password': 'your-password''
-        }
-        
-        # Try to load from file
-        try:
-            config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "email_config.json")
-            if os.path.exists(config_path):
-                with open(config_path, "r") as f:
-                    loaded_config = json.load(f)
-                    email_config.update(loaded_config)
-        except Exception as e:
-            logger.error(f"Error loading email config: {str(e)}")
-            
-        return email_config
-
-# For running as a standalone background process (not a service)
-class BackgroundProcess:
-    def __init__(self):
-        # Hide console window
-        self.hide_console()
-        
-        # Set up email settings
-        email_config = {
-             'from_email': 'your-email@example.com',
-    'to_email': 'alerts-email@example.com',
-    'smtp_server': 'smtp.example.com',
-    'smtp_port': 587,
-    'username': 'your-username',
-    'password': 'your-password'
-        }
-        
-        # Try to load config from file
-        try:
-            config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "email_config.json")
-            if os.path.exists(config_path):
-                with open(config_path, "r") as f:
-                    loaded_config = json.load(f)
-                    email_config.update(loaded_config)
-        except Exception as e:
-            logger.error(f"Error loading email config: {str(e)}")
-        
-        # Save email config
-        try:
-            with open("email_config.json", "w") as f:
-                json.dump(email_config, f)
-        except Exception as e:
-            logger.error(f"Error saving email config: {str(e)}")
+    try:
+        print("=== USB Device Threat Monitor ===")
+        print("Monitoring for USB devices and automatically scanning for threats.")
+        print("WARNING: If threats are detected, system will shut down after 3 seconds with NO option to cancel.")
+        print("Press Ctrl+C to stop monitoring (if no threats detected).\n")
         
         # Create and start the monitor
-        self.monitor = DeviceMonitor(email_config)
-        self.monitor.start_monitoring()
+        monitor = DeviceMonitor(email_config)
+        monitor.start_monitoring()
         
-        logger.info("USB monitor started in background mode")
-    
-    def hide_console(self):
-        """Hide the console window."""
-        try:
-            # Hide console window for this process
-            hwnd = ctypes.windll.kernel32.GetConsoleWindow()
-            if hwnd != 0:
-                ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE = 0
-        except Exception as e:
-            logger.error(f"Failed to hide console: {str(e)}")
-                
-    def run(self):
-        try:
-            # Keep the process running
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            logger.info("Stopping USB monitoring...")
-            self.monitor.stop_monitoring()
-        except Exception as e:
-            logger.critical(f"Fatal error: {str(e)}")
-            sys.exit(1)
-
-# Create a startup script
-def create_startup_script():
-    """Create a .bat file that runs the script at startup."""
-    try:
-        # Get the path to the current script
-        script_path = os.path.abspath(__file__)
-        startup_path = os.path.join(os.environ['APPDATA'], 'Microsoft\\Windows\\Start Menu\\Programs\\Startup')
-        bat_path = os.path.join(startup_path, 'usb_monitor.bat')
-        
-        # Create the batch file content
-        bat_content = f'@echo off\nstart "USB Monitor" /b pythonw "{script_path}" --background\n'
-        
-        # Write the batch file
-        with open(bat_path, 'w') as f:
-            f.write(bat_content)
-            
-        logger.info(f"Created startup script at {bat_path}")
-        return True
+        # Keep the main thread alive
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nStopping USB monitoring...")
+        if 'monitor' in locals():
+            monitor.stop_monitoring()
     except Exception as e:
-        logger.error(f"Failed to create startup script: {str(e)}")
-        return False
-
-def main():
-    # Parse command-line arguments
-    if len(sys.argv) > 1:
-        if sys.argv[1] == '--background':
-            # Run as a background process
-            bg_process = BackgroundProcess()
-            bg_process.run()
-        elif sys.argv[1] == 'install':
-            # Install as a Windows service
-            win32serviceutil.HandleCommandLine(USBMonitorService)
-        elif sys.argv[1] == '--setup-startup':
-            # Set up to run at startup
-            create_startup_script()
-            print("USB Monitor set to run at startup.")
-        else:
-            # Handle service commands
-            win32serviceutil.HandleCommandLine(USBMonitorService)
-    else:
-        # Display help
-        print("USB Device Threat Monitor - Background Service")
-        print("Usage:")
-        print("  python usb_monitor.py --background     - Run as a background process")
-        print("  python usb_monitor.py install          - Install as a Windows service")
-        print("  python usb_monitor.py start            - Start the service")
-        print("  python usb_monitor.py stop             - Stop the service")
-        print("  python usb_monitor.py remove           - Remove the service")
-        print("  python usb_monitor.py --setup-startup  - Configure to run at Windows startup")
+        logger.critical(f"Fatal error: {str(e)}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
