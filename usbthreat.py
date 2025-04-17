@@ -525,12 +525,12 @@ class DeviceMonitor:
 def main():
     # Set up email settings
     email_config = {
-        'from_email': 'dheerajsarswat14@gmail.com',
-        'to_email': 'dheeraj.23bcy10146@vitbhopal.ac.in',
-        'smtp_server': 'smtp.gmail.com',
-        'smtp_port': 587,
-        'username': 'dheerajsarswat14@gmail.com',
-        'password': 'ktvphausyyxgpqec'
+       'from_email': 'your-email@example.com',
+    'to_email': 'alerts-email@example.com',
+    'smtp_server': 'smtp.example.com',
+    'smtp_port': 587,
+    'username': 'your-username',
+    'password': 'your-password'
     }
     
     # Save email config
